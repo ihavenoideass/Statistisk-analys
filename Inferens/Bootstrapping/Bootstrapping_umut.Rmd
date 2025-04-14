@@ -1,0 +1,187 @@
+---
+title: 'Inlämning 4 Umut Arslan'
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+  html_notebook:
+    theme: flatly
+    toc: yes
+author: 'Umut Arslan'    
+date: "`r format(Sys.time(), '%d %B, %Y')`"    
+---
+```{r, include=FALSE}
+options(tinytex.verbose = TRUE)
+```
+Syftet med uppgiften är att med hjälp av datafilen resampla med bootstrap. Som vi kan se så presterar den bättre desto större stickprov vi har, som vanliga t-test sampligen vi gjorde innan. Resultaten är snarlik t.test konfidensintervallen.
+```{r , error= FALSE, warning = FALSE}
+#iv
+
+# bootstrap resampling
+# skapar flera stickprov
+
+
+
+data <- read.table(file = "Langddata.txt", header = TRUE) ## Laddar in datan
+
+
+
+
+
+samp_20 <- 20
+samp_100 <- 100
+samp_1000 <- 1000
+
+sample_size_20 <- data[sample(1:nrow(data), samp_20, replace = TRUE), ] ##Samplar direkt från datafilen, 20 = N
+sample_size_100 <- data[sample(1:nrow(data), samp_100, replace = TRUE), ] ## Samplar direkt från datafilen, 100 = N
+sample_size_1000 <- data[sample(1:nrow(data), samp_1000, replace = TRUE), ] ##Samplar direkt från datafilen, 1000 = N
+
+
+
+# bootstrap resampling
+boot_20 <- numeric(1000) ## sparar bootstr-sample estimeringarna för N = 20
+boot_100 <- numeric(1000) ## sparar bootstr-sample estimeringarna för N = 100
+boot_1000 <- numeric(1000) ## sparar bootstr-sample estimeringarna för N = 1000
+
+for(i in 1:1000){
+  # Beräknar samplen för respektive grupp och tar medelvärdet på dessa minus varandra.
+  #Sparar dom i boot_xx för att kunna göra ett CI på medelvärdesskillnaden på dessa.
+  
+
+boot_sample_20 <- sample_size_20[sample(1:20, 20, replace = TRUE), ] ## Gör ett bootstrap stickprov från stickprovet med N = 20
+boot_sample_100 <- sample_size_100[sample(1:100, 100, replace = TRUE), ] ## Gör ett bootstrap stickprov från stickprovet med N = 100
+boot_sample_1000 <- sample_size_1000[sample(1:1000, 1000, replace = TRUE), ] ## Gör ett bootstrap stickprov från stickprovet med N = 1000
+  
+
+grp_1_20_data <- boot_sample_20[which(boot_sample_20$grupp == "Gr1"),names(boot_sample_20) %in% c("langd")] ## Separerar Gr1 från Gr2 i sample N = 20
+grp_2_20_data <- boot_sample_20[which(boot_sample_20$grupp == "Gr2"),names(boot_sample_20) %in% c("langd")] ## Separerar Gr2 från Gr1 i sample N = 20
+
+grp_1_100_data <- boot_sample_100[which(boot_sample_100$grupp == "Gr1"),names(boot_sample_100) %in% c("langd")] ## Separerar Gr1 från Gr2 i sample N = 100
+grp_2_100_data <- boot_sample_100[which(boot_sample_100$grupp == "Gr2"),names(boot_sample_100) %in% c("langd")] ## Separerar Gr2 från Gr1 i sample N = 100
+
+grp_1_1000_data <- boot_sample_1000[which(boot_sample_1000$grupp == "Gr1"),names(boot_sample_1000) %in% c("langd")] ## Separerar Gr2 från Gr1 i sample N = 1000
+grp_2_1000_data <- boot_sample_1000[which(boot_sample_1000$grupp == "Gr2"),names(boot_sample_1000) %in% c("langd")] ## Separerar Gr2 från Gr1 i sample N = 1000
+
+
+medel_skillnad_20 <- mean(grp_1_20_data) - mean(grp_2_20_data)
+medel_skillnad_100 <- mean(grp_1_100_data) - mean(grp_2_100_data)
+medel_skillnad_1000 <- mean(grp_1_1000_data) - mean(grp_2_1000_data)
+
+  
+  
+  boot_20[i] <- medel_skillnad_20
+  boot_100[i] <- medel_skillnad_100
+  boot_1000[i] <- medel_skillnad_1000
+
+}
+
+
+# 95-procentigt konfidensintervall för bootsen
+
+c(mean(boot_20), quantile(boot_20, c(0.025, 0.975), na.rm = TRUE))
+c(mean(boot_100), quantile(boot_100, c(0.025, 0.975), na.rm = TRUE))
+c(mean(boot_1000), quantile(boot_1000, c(0.025, 0.975), na.rm = TRUE))
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+Utvärderar tre olika modeller, Regressionsmodell, polynomregressionsmodell samt en lokal regressionsmodell.
+Tar fram bias, mse och se för respektive modell.
+
+Vi kan se att bias samt standard error verkar vara lägs på den lokala regressionsmodellen
+
+```{r, results="markup"}
+## VI
+
+sum_bias_pred_1 <- matrix(nrow = 1000) 
+sum_bias_pred_2 <- matrix(nrow = 1000)
+sum_bias_pred_3 <- matrix(nrow = 1000)
+
+options(scipen = 100) ### Tar bort vetenskapliga notationer som e^-5 etc.
+
+
+  for(i in 1:1000){ 
+    
+    
+    
+    
+    x <- sort(runif(100, -100, 100), decreasing = FALSE)
+    y <- sin(x/20) + rnorm(100, 0, 0.5)
+    
+    
+    skatt_reg <- lm(y ~ x) ## skattar regressionsmodell
+    pol_reg <- lm(y ~ poly(x, 3)) ## skattar polynomregressionsmodell
+    local_reg <- loess(y ~ x) ##skattar lokal regressionsmodell
+    
+
+    skatt_reg_pred <- predict(skatt_reg) ##predikterar den skattade regressionen
+    pol_reg_pred <- predict(pol_reg) ##predikterar den skattade polynomen
+    local_reg_pred <- predict(local_reg) ##predikterar den skattade lokal reg
+    
+  
+    
+      bias_pred_1 <- skatt_reg_pred - sin(x/20) ## beräknar bias på regression
+      bias_pred_2 <- pol_reg_pred - sin(x/20) ## beräknar bias på polynom
+      bias_pred_3 <- local_reg_pred - sin(x/20) ## beräknar bias på lokal reg
+    
+
+
+
+
+    sum_bias_pred_1[i, ] <- mean(bias_pred_1) ## beräknar bias på regression 1000ggr
+    sum_bias_pred_2[i, ] <- mean(bias_pred_2) ## beräknar bias på polynom 1000ggr
+    sum_bias_pred_3[i, ] <- mean(bias_pred_3) ## beräknar bias på lokal reg 1000ggr
+  
+  }
+    
+    
+    
+ 
+    
+    se_skatt_reg_pred <- sd(skatt_reg_pred) ## beräknar standarderror för reg
+    se_pol_reg_pred <- sd(pol_reg_pred) ## beräknar standarderror för poly
+    se_local_reg_pred <- sd(local_reg_pred) ## beräknar standarderror för lokal
+    
+    
+    mse_skatt_reg_pred <- sum(bias_pred_1^2) + var(skatt_reg_pred) ## beräknar mean square error för reg
+    mse_pol_reg_pred <- sum(bias_pred_2^2) + var(pol_reg_pred) ## beräknar mean square error för poly
+    mse_local_reg_pred <- sum(bias_pred_3^2) + var(local_reg_pred) ## beräknar mean square error för lokal
+    
+    
+    skatt_pred_sammansatt <- data.frame(mean(sum_bias_pred_1), se_skatt_reg_pred, mse_skatt_reg_pred) ## skapar dataframe för regression prediktionen
+    colnames(skatt_pred_sammansatt) <- c("Bias", "SE", "MSE") ## döper om kolumnerna
+    
+    pol_pred_sammansatt <- data.frame(mean(sum_bias_pred_2), se_pol_reg_pred, mse_pol_reg_pred) ## skapar dataframe för polynom prediktionen
+    colnames(pol_pred_sammansatt) <- c("Bias", "SE", "MSE") ## döper om kolumnerna
+    
+    local_pred_sammansatt <- data.frame(mean(sum_bias_pred_3), se_local_reg_pred, mse_local_reg_pred) ## skapar dataframe för lokala prediktionen
+    colnames(local_pred_sammansatt) <- c("Bias", "SE", "MSE") ## döper om kolumnerna
+    
+    sammansatt <- rbind(skatt_pred_sammansatt, pol_pred_sammansatt, local_pred_sammansatt ) ## slår ihop dataframsen till en
+    
+    rownames(sammansatt) <- c("Regressionsmodell", "Polynomregressionsmodell", "Local regression models") ## byter namn på respektive rad
+
+    
+ 
+
+    
+samman_matrix <- as.matrix(sammansatt)
+
+print(samman_matrix)
+
+
+```

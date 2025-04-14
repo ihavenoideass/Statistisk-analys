@@ -1,0 +1,618 @@
+---
+title: 'Classification case study: H1N1 flu vaccine data'
+output:
+  html_notebook:
+    theme: flatly
+    toc: yes
+  html_document:
+    df_print: paged
+    toc: yes
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+author: 'Umut Arslan'    
+date: "`r format(Sys.time(), '%d %B, %Y')`"    
+---
+```{r, include=FALSE}
+options(tinytex.verbose = TRUE)
+```
+
+```{r, include = FALSE, message=FALSE}
+library(webshot)
+if(is_phantomjs_installed() == FALSE){
+  install_phantomjs()
+}
+
+library(tidymodels)
+library(tidyverse)
+library(inspectdf)
+library(skimr)
+library(table1)
+library(kableExtra)
+library(glmnet)
+library(kknn)
+library(ranger)
+library(xgboost)
+library(vip)
+library(readxl)
+library(themis)
+```
+
+
+## Problem description
+
+We will use the data to predict the likelihood of people taking the vaccine.
+The reason for the predictions is to see what variables weight in the most, if we can find those we could probably increase the likelihood of more people vaccinating themselves
+
+
+## Brief introduction to the data
+
+The data consists of a subset of the data collected through The National 2009 H1N1 Flu Survey conducted in the United States.
+The target population for the NHFS was all persons 6 months or
+older living in the United States at the time of the 
+interview. Data from the NHFS were used to produce timely estimates 
+of vaccination coverage rates for both the monovalent pH1N1 and
+trivalent seasonal influenza vaccines.
+
+
+## Data exploration
+
+starting with loading and exploring the data. Below we can see the column names, variable type and how many n_missings (NAs).
+
+```{r}
+##########################################
+#Load data (with missingness)
+##########################################
+load("test_predictors.RData")
+load("train_predictors_outcome.RData")
+
+
+##########################################
+#Explore data 
+##########################################
+```
+```{r, include = FALSE, message=FALSE}
+skim(train_predictors_outcome)
+```
+Our outcome is the "h1n1_vaccine" variable, which take the value "Yes" if they took the vaccine, and "No" otherwise. Let us look at the proportion of the two categories/classes.
+```{r, include = FALSE, message=FALSE}
+#Check balance on outcome
+train_predictors_outcome %>% 
+  count(h1n1_vaccine) %>% 
+  mutate(prop = n/sum(n))
+```
+
+We see that the outcome is skewed negatively with only 21% of the population taking the vaccine
+Next we look at the distribution of the variable types in our data. We see that 28 of the 29 varaibles are factorial (factors or oredered factors).
+
+```{r}
+#View distribution of variable classes
+show_plot(inspect_types(train_predictors_outcome))
+```
+Above, we saw all of the NAs of the data. These represent missing values. Let us look at the distribution of missingness.
+```{r}
+#View distribution of missing values
+show_plot(inspect_na(train_predictors_outcome))
+```
+We can see that we have a couple of variables with relatively high proportion of missingness, some with
+modern missingness, some with relatively low missingness and seven of the variables have no missing values. If we look at the data
+stratified on the outcome we can see if the missingness pattern seem to differ between the two outcome
+classes.
+```{r}
+#View distribution of missing values stratified on outcome
+show_plot(inspect_na(train_predictors_outcome %>% filter(h1n1_vaccine  == "Yes"), train_predictors_outcome %>% filter(h1n1_vaccine  == "No")))
+```
+Most of the variables the pattern is similar, but for doctor_recc_h1n1 there are more then significant diffrecense. Some of the other variables (if u look on the top of the graph) also have a diffrence between them but the differences between thoes are not  as noticeable as doctor_recc_h1n1 
+
+
+
+
+## Analysis
+
+### Impute missing data
+Since we have missing values (NAs) in our data, we will impute these. We will use an easy to implement single imputation method based on the K nearest neighbor method. 
+
+```{r}
+########################################################################
+# IMPUTE MISSING DATA
+########################################################################
+
+#Set a random seed, in this way we can replicate the exact splits later on if needed
+set.seed(82734)
+
+#Make a recipe for how the imputation will be done (specify the imputation model)
+  impute_recipe <- recipe(h1n1_vaccine ~ ., data = train_predictors_outcome) %>%
+  step_knnimpute(all_predictors(), neighbors = 3) 
+  impute_prep <- prep(impute_recipe, training = train_predictors_outcome) #Prep the train_predictors_outcome data using the imputation recipe
+
+  
+  #train_imp <- bake(impute_prep, train_predictors_outcome), Bake (compute/retrieve) the imputed data by using the prep above on the data
+  #test_imp <- bake(impute_prep, test_predictors), Bake (compute/retrieve) the imputed data by using the prep above on the data
+  #save(test_imp, file = "test_imp.RData"), Save for later
+  #save(train_imp, file = "train_imp.RData"), Save for later
+
+  
+  #Because i already ran the codes i can just load the data
+  load("train_imp.RData")
+  load("test_imp.RData")
+
+
+
+```
+
+
+```{r,echo=FALSE, message=FALSE}
+
+show_plot(inspect_na(train_imp))
+
+```
+As u can see now we have zero missing values.
+
+
+
+We started by splitting the data into a training and a test set and here we will take the training data and split
+it further
+```{r}
+########################################################################
+# CREATE CROSS-VALIDATION FOLDS FOR MODEL EVALUATION/COMPARISON
+########################################################################
+#Prepare for 10-fold cross-validation, observations selected into folds with random 
+#sampling stratified on outcome
+set.seed(877)
+folds <- vfold_cv(train_imp, v = 10, strata = h1n1_vaccine)
+
+```
+
+### Evaluation metrics
+Decide which performance measures to compute.
+
+```{r}
+########################################################################
+# EVALUATION METRICS
+########################################################################
+#Which metrics should be computed?
+my_metrics <- metric_set(roc_auc, precision, recall, specificity, accuracy, bal_accuracy, f_meas)
+
+```
+
+### Data preprocessing
+In this step we prepare the data for analysis. Since in our case the outcome variable is pretty unbalanced we will downsample the majority class, h1n1_vaccine,
+
+```{r}
+########################################################################
+# CREATE RECIPE FOR PREPROCESSING DATA
+########################################################################
+#Create recipe for preprocessing data: undersampling majority class, categorical variables into dummy variables etc
+train_rec <- 
+    recipe(h1n1_vaccine ~ ., data = train_imp) %>%
+    update_role(respondent_id, new_role = "ID") %>%
+    step_normalize(all_numeric()) %>% #Center and scale all numeric variables
+    step_dummy(all_nominal(), -all_outcomes()) %>% #Recode all factors, except outcome, to dummy variables
+    themis::step_downsample(h1n1_vaccine) #Downsample the majority class to have a more balanced outcome
+
+
+```
+
+### Modelling
+We will analyze the data using four different methods: Logistic regression, Penalized logistic regression (LASSO), K nearest neighbors and Random forest 
+
+#### LOGISTIC REGRESSION
+Here, when fitting the logistic regression model we will do no model selection or include any interaction etc. We simply fit a model where we include all predictors and evaluate this by 10-fold cross-validation.
+```{r}
+########################################################################
+# MODELLING
+########################################################################
+########################################
+# MODEL 1: Logistic regression
+########################################
+#Model specification
+lr_mod <-
+  logistic_reg() %>%
+  set_engine("glm")
+
+#Work flow: Which model to use and how data should be preprocessed
+lr_wflow <-
+  workflow() %>%
+  add_model(lr_mod) %>%
+  add_recipe(train_rec)
+
+#Use the workflow and folds object to fit model on cross-validation resamples
+lr_fit_rs <- 
+  lr_wflow %>% 
+  fit_resamples(folds, metrics = my_metrics, control = control_resamples(save_pred = TRUE))
+
+#Get mean out-of-sample performance measures
+lr_metrics <- collect_metrics(lr_fit_rs)
+lr_metrics
+```
+```{r, include = FALSE, message=FALSE}
+#Store part of the metrics object for later comparison with other models
+lr_metrics_sub <- lr_metrics[ , c(1,3,5)]
+lr_metrics_sub <- lr_metrics_sub %>% 
+  pivot_longer(!.metric, names_to = "measure", values_to = ".estimate")
+
+#Fit the above logistic regression model on the full training data
+lr_fit_train <- 
+  lr_wflow %>%
+  fit(data = train_imp)
+
+
+#Get the predicted class probabilities computed for the full training data
+lr_pred_prob_train <- predict(lr_fit_train , type = "prob", new_data =  train_imp)
+#Get the receiver operator curve (ROC) computed for the full training data
+lr_train_roc <- roc_curve(tibble(h1n1_vaccine = train_imp$h1n1_vaccine, lr_pred_prob_train), truth = h1n1_vaccine, estimate =.pred_Yes) %>% 
+  mutate(model = "Log_reg")
+  
+
+lr_pred_class_test_no_outcome <- predict(lr_fit_train , type = "class", new_data = test_imp)
+  lr_pred_prob_test_no_outcome <- predict(lr_fit_train , type = "prob", new_data = test_imp)
+  
+  #Binds together Pred class + Pred prob)
+  preds1 <- cbind(lr_pred_class_test_no_outcome, lr_pred_prob_test_no_outcome )
+  
+  summary(preds)
+```
+
+
+
+#### HYPERPARAMETER TUNING
+In some modelling situations we need to select the value for one or several so called hyperparameters. The next model i choose to predict with is Penalized logistic regression (LASSO)
+```{r}
+############################################################
+#CREATE CROSS-VALIDATION FOLDS FOR HYPERPARAMETER TUNING
+###########################################################
+#Prepare for hyperparameter selection by 10-fold cross-validation, observations selected into folds with random 
+#sampling stratified on outcome
+set.seed(89)
+tune_folds <- vfold_cv(train_imp, v = 10, strata = h1n1_vaccine)
+
+#Set metric for choosing hyperparameter
+roc_res <- metric_set(roc_auc)
+```
+
+#### PENALIZED LOGISTIC REGRESSION (LASSO)
+Penalized logistic regression, here in the form of LASSO, shrinks coefficients for irrelevant variables towards zero. How much shrinkage is done depends on the size of the penalty parameter. In this way a kind of variable selection is performed since variables that are only weakly related to the outcome will have less impact when predicting the outcome.
+
+```{r}
+################################################
+# MODEL 2: Penalized logistic regression (LASSO)
+################################################
+
+#Model specification
+penlr_mod <-
+    logistic_reg(mixture = 1, penalty = tune()) %>% #Specify that we want to tune the penalty parameter
+    set_engine("glmnet") %>%
+    set_mode("classification")
+
+#Set up workflow
+penlr_wflow <-
+    workflow() %>%
+    add_model(penlr_mod) %>%
+    add_recipe(train_rec)
+
+#Get a parameter object for our data and model specification. Contains information about possible values, ranges, types etc.
+  penlr_param <-
+    penlr_wflow %>%
+    parameters() %>%
+    finalize(train_imp)
+  
+#Look at the range for the penalty parameter
+penlr_param%>% pull_dials_object("penalty")
+  
+#Already tuned the code, will load it instead. 
+load("penlr_tune.RData")
+   
+#Store the best penalty value
+penlr_best_param <- select_best(penlr_tune, "roc_auc")
+   
+#Set up the final workflow using the best penalty value
+final_penlr_wflow <-
+     penlr_wflow %>%
+     finalize_workflow(penlr_best_param)
+   
+#Fit the final model on the cross-validation folds set up for model evaluation/comparison
+penlr_fit_rs <-
+     final_penlr_wflow %>%
+     fit_resamples(folds, metrics = my_metrics, control = control_resamples(save_pred = TRUE))
+
+#Get mean out-of-sample performance measures
+penlr_metrics <- collect_metrics(penlr_fit_rs)
+   penlr_metrics
+```
+```{r, include = FALSE, message=FALSE}
+ #set.seed(99)
+   #penlr_tune <-
+   #penlr_wflow %>%
+   #tune_grid(
+   #tune_folds,
+   #grid = penlr_param %>% grid_regular(levels = c(penalty = 100)),
+   #metrics = roc_res
+   #)
+   
+   #save(penlr_tune, file = "penlr_tune.RData")
+
+   
+
+    #View plot of penalty values vs. AUROC
+    autoplot(penlr_tune) + theme(legend.position = "top")
+
+    #View the penalty values with largest AUROC
+    show_best(penlr_tune) %>% select(-.estimator)
+
+
+
+   #Store part of the metrics object for later comparison with other models
+   penlr_metrics_sub <- penlr_metrics[, c(1,3,5)]
+   penlr_metrics_sub <- penlr_metrics_sub %>%
+     pivot_longer(!.metric, names_to = "measure", values_to = "estimate")
+   
+   penlr_fit_train <-
+     final_penlr_wflow %>%
+     fit(data = train_imp)
+   
+   penlr_fit_train%>%
+     pull_workflow_fit() %>%
+     vip(lambda = penlr_best_param$penalty, num_features = 200)
+   
+   
+   #Get the model coefficients
+   penlr_coeff <- data.frame(penlr_fit_train %>%
+                               pull_workflow_fit() %>%
+                               tidy())
+   
+   penlr_pred_prob_train <- predict(penlr_fit_train , type = "prob", new_data = train_imp)
+   penlr_train_roc <- roc_curve(tibble(h1n1_vaccine = train_imp$h1n1_vaccine, penlr_pred_prob_train), truth = h1n1_vaccine, estimate =.pred_Yes) %>%
+     mutate(model = "Pen_log_reg")
+   
+   penlr_pred_class_test_no_outcome <- predict(penlr_fit_train , type = "class", new_data = test_imp)
+   penlr_pred_prob_test_no_outcome <- predict(penlr_fit_train , type = "prob", new_data = test_imp)
+   
+   
+   preds2 <- cbind(penlr_pred_class_test_no_outcome, penlr_pred_prob_test_no_outcome )
+   summary(preds2)
+
+```
+
+#### K NEAREST NEIGHBORS
+The most important hyperparameter is the number of neighbors used in the fit. Another hyperparameter is the kernel, which decides how much weight a neighboring observation is given depending on its distance from the observation of interest. Here, we will go with default values on all hyperparameters except the number of neighbors.
+
+```{r}
+################################################
+# MODEL 3: Nearest neighbors
+################################################
+
+#Model specification
+knn_mod <-
+     nearest_neighbor(neighbors = tune()) %>% #Specify that we want to tune the neighbors parameter
+     set_engine("kknn") %>%
+     set_mode("classification")
+
+#Work flow: Which model to use and how data should be preprocessed
+knn_wflow <-
+     workflow() %>%
+     add_model(knn_mod) %>%
+     add_recipe(train_rec)
+   
+
+#Get a parameter object for our data and model specification
+knn_param <-
+     knn_wflow %>%
+     parameters() %>%
+     finalize(train_imp)
+
+#Look at the range for the neighbor parameter
+knn_param%>% pull_dials_object("neighbors")
+
+#Update the range for possible neighbor values
+knn_param <- 
+  knn_wflow %>% 
+  parameters() %>% 
+  update(neighbors = neighbors(c(1, 500))) %>% 
+  finalize(train_imp)
+
+#Look at the updated range for the neighbor parameter
+knn_param%>% pull_dials_object("neighbors")
+
+
+#Already tuned the code, will load it instead. 
+load("knn_tune.RData")
+
+#View plot of number of neighbors vs. AUROC
+autoplot(knn_tune) + theme(legend.position = "top")
+
+
+#Store the best neighbor value
+knn_best_param <- select_best(knn_tune, "roc_auc")
+
+#Set up the final workflow using the best neighbor value
+final_knn_wflow <- 
+  knn_wflow %>% 
+  finalize_workflow(knn_best_param)
+
+#Fit the final model on the cross-validation folds set up for model evaluation/comparison
+knn_fit_rs <- 
+  final_knn_wflow %>% 
+  fit_resamples(folds, metrics = my_metrics, control = control_resamples(save_pred = TRUE))
+
+#Get mean out-of-sample performance, measured as accuracy and area under the receiver operator curve (AUROC)
+knn_metrics <- collect_metrics(knn_fit_rs)
+knn_metrics
+```
+```{r, include = FALSE, message=FALSE}
+#Tune the model: Set up a grid of neighbor values to be evalutated and select the optimal number of neighbors (in terms of AUROC)
+#set.seed(99)
+ #knn_tune <-
+#   knn_wflow %>%
+#   tune_grid(
+#     tune_folds,
+#     grid = knn_param %>% grid_regular(levels = c(neighbors = 40)),
+#     metrics = roc_res
+#   )
+save(knn_tune, file = "knn_tune.RData") 
+
+
+#Store some of the results for later comparison with other models
+knn_metrics_sub <- knn_metrics[ , c(1,3,5)]
+knn_metrics_sub <- knn_metrics_sub %>% 
+  pivot_longer(!.metric, names_to = "measure", values_to = "estimate")
+
+
+#Fit the final model on the full training data
+knn_fit_train <- 
+  final_knn_wflow %>%
+  fit(data = train_imp)
+
+#Get the predicted class probabilities computed for the full training data
+knn_pred_prob_train <- predict(knn_fit_train , type = "prob", new_data =  train_imp)
+
+#Get the receiver operator curve (ROC) computed for the full training data
+knn_train_roc <- roc_curve(tibble(h1n1_vaccine = train_imp$h1n1_vaccine, knn_pred_prob_train), truth = h1n1_vaccine, estimate =.pred_Yes)  %>% 
+  mutate(model = "KNN")
+
+#When you have test data without outcome
+knn_pred_class_test_no_outcome <- predict(knn_fit_train , type = "class", new_data =  test_imp)
+knn_pred_prob_test_no_outcome <- predict(knn_fit_train , type = "prob", new_data =  test_imp)
+    preds3 <- cbind(knn_pred_class_test_no_outcome, knn_pred_prob_test_no_outcome )
+```
+
+#### RANDOM FOREST
+Random forest is an ensemble method that grows T descision trees where each tree is fitted using a bootstrap sample. A bootstrap sample is a random sample of the data, of the same size as the data, sampled with replacement. At each candidate split when growing a tree, a random subset of the predictors is considered for the split. A prediction is subsequently made by taking the majority vote of all T trees, that is the most frequently predicted class among all T trees. Below, we will tune the models in terms of both the number of trees and number of randomly selected predictors.
+```{r}
+################################################
+# MODEL 4: Random forest
+################################################
+
+#Preprocessing without creating dummies
+train_rec_rf <-
+      recipe(h1n1_vaccine ~ ., data = train_imp) %>%
+      update_role(respondent_id, new_role = "ID") %>%
+      step_normalize(all_numeric()) %>%
+      themis::step_downsample(h1n1_vaccine)
+
+#Model specification
+rf_mod <-
+  rand_forest(mtry = tune(), trees = tune()) %>% #Specify that we want to tune both the mtry and trees parameters
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+#Work flow: Which model to use and how data should be preprocessed
+rf_wflow <-
+  workflow() %>%
+  add_model(rf_mod) %>%
+  add_recipe(train_rec_rf)
+
+#Get a parameter object for our data and model specification, where we also update the ranges of mtry and trees
+rf_param <-
+  rf_wflow %>%
+  parameters() %>%
+  update(mtry = mtry(c(1, 16))) %>%
+  update(trees = trees(c(500, 1500))) %>%
+  finalize(train_imp)
+
+
+#Already tuned the code, will load it instead. 
+load("rf_tune.RData")
+
+
+#Store the best hyperparameter combination
+rf_best_param <- select_best(rf_tune, "roc_auc")
+
+#Set up the final workflow using the best hyperparameter values
+final_rf_wflow <- 
+  rf_wflow %>% 
+  finalize_workflow(rf_best_param)
+
+#Fit the final model on the cross-validation folds set up for model evaluation/comparison
+rf_fit_rs <- 
+  final_rf_wflow %>% 
+  fit_resamples(folds, metrics = my_metrics, control = control_resamples(save_pred = TRUE))
+
+#Get mean out-of-sample performance, measured as accuracy and area under the receiver operator curve (AUROC)
+rf_metrics <- collect_metrics(rf_fit_rs)
+rf_metrics
+```
+```{r, include = FALSE, message=FALSE}
+#Tune the model
+    #set.seed(99)
+    #rf_tune <-
+      #rf_wflow %>%
+      #tune_grid(
+      #  tune_folds,
+       # grid = rf_param %>% grid_regular(levels = c(mtry = 8, trees = 3)),   ###Mtry decides how many dots, trees = 3 takes lowest middle and higest value in (update)
+      #  metrics = roc_res
+     # )
+    #
+
+
+ #Store some of the results for later comparison with other models
+    rf_metrics_sub <- rf_metrics[, c(1,3,5)]
+    rf_metrics_sub <- rf_metrics_sub %>%
+      pivot_longer(!.metric, names_to = "measure", values_to = "estimate")
+    
+    #Fit the final model on the full training data
+    rf_fit_train <-
+      final_rf_wflow %>%
+      fit(data = train_imp)
+    
+    #Look at the variable importance
+    rf_fit_train%>%
+      pull_workflow_fit() %>%
+      vip(num_features = 200)
+    
+    #Get the predicted class probabilities computed for the full training data
+    rf_pred_prob_train <- predict(rf_fit_train , type = "prob", new_data = train_imp)
+    
+    #Get the receiver operator curve (ROC) computed for the full training data
+    rf_train_roc <- roc_curve(tibble(h1n1_vaccine = train_imp$h1n1_vaccine, rf_pred_prob_train), truth = h1n1_vaccine, estimate =.pred_Yes) %>%
+      mutate(model = "RF")
+    
+    #When you have test data without outcome
+    rf_pred_class_test_no_outcome <- predict(rf_fit_train , type = "class", new_data = test_imp)
+    rf_pred_prob_test_no_outcome <- predict(rf_fit_train , type = "prob", new_data = test_imp)
+    
+    preds <- cbind(rf_pred_class_test_no_outcome, rf_pred_prob_test_no_outcome)
+    save(preds1, file = "preds.RData")
+    save(preds2, file = "preds2.RData")
+    save(preds3, file = "preds3.RData")
+    save(preds, file = "preds4.RData")
+```
+
+## Results
+
+Looking at the results based on the cross-validated training set, in the table and figure below,  we see that all methods had ROC-curves away from the diagonal and AUROC above 0.5. This means that using either of the methods would be better than "random guess" prediction. All models had similar results. There was not a huge difference between the best performing methods and the worst performing methods. If interpretability is highly valued one of the regression methods could be used instead of the best performing methods without losing much in predictive performance. My RF method was by far the slowest to compile, took around 45 minutes for it to finish. But if u look at the graph it seems like it has the highest area under the curve.
+
+
+
+```{r, echo=FALSE, message=FALSE}
+#Combine the results from different models in one tibble
+    metrics_table_data_train <- bind_cols(lr_metrics_sub[c(11:12, 1:10, 13:14), 1:3], penlr_metrics_sub[c(11:12, 1:10, 13:14), 3], knn_metrics_sub[c(11:12, 1:10, 13:14), 3],
+                                          rf_metrics_sub[c(11:12, 1:10, 13:14), 3])
+    colnames(metrics_table_data_train) <- c("Metric", "Measure", "Log_reg", "Pen_log_reg", "KNN", "RF")    
+    
+    #Convert the tibble to a data.frame
+    results_table_train <- data.frame(metrics_table_data_train)
+    
+    # #Produce a table with results based on training data
+    results_table_train %>%
+      kbl(caption = "Table 3. Model performance based on 10-fold CV on imputed training data (n = 6 676)",  digits = 7) %>%
+      kable_classic(full_width = T, html_font = "Cambria")    
+
+        
+    #Plot ROC:s on final models fit on full training data
+    
+    bind_rows(lr_train_roc, penlr_train_roc, knn_train_roc, rf_train_roc) %>% 
+      ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+      labs(caption = "ROC curves based on 10-fold CV") +
+      geom_path(lwd = 1.5, alpha = 0.8) +
+      geom_abline(lty = 3) + 
+      coord_equal() + 
+      scale_color_viridis_d(option = "plasma", end = .6)
+```
+
+
+
+## Conclusions
+
+All the tests scored equally except for, K nearest neighbors. i would have chosen the Random Forest model because of the graph and the highest yes ratio (in preds),it looks like the best performing there.
+Random forest is pretty computing heavy, i know u can change the trees/mtries etc to reduce the time to create the predictor. So i don't really know if i would use it for that reason. The rest of the models computed fast so i would have used all of them again. 

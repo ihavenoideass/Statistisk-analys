@@ -1,0 +1,624 @@
+---
+title: "written_report_kap_4_umut"
+author: "Umut Arslan"
+date: "2023-02-17"
+output: pdf_document
+---
+
+```{r, include=FALSE}
+options(tinytex.verbose = TRUE)
+```
+
+```{r, include = FALSE, message=FALSE}
+
+library(dplyr)
+library(caTools)
+library(MASS)
+library (class)
+library(tidyverse)
+library(e1071)
+library(corrplot)
+library(caret)
+library(inspectdf)
+library(pROC)
+library(boot)
+library(corrplot)
+library(Hmisc)
+
+```
+## Klassificering/predektion av vin
+
+Jag har ett datasett bestående av rött och vitt vin med diverse "kemiska egenskaper". Min uppgift är att försöka skapa en modell som predikterar/klassificerar en responsvariabel, quality, så bra som möjligt.
+
+Jag har skapat en ny variabel som definerar vad "Excellent" och "Not Excellent" är utifrån responsvariabeln quality. Om quality är större eller lika med 7 så får min nya responsvariabel, qualitydiff,  värdet "Excellent" och om quality är lägre än 7 så får qualitydiff värdet "Not Excellent".
+
+Datasettet kommer från: http://archive.ics.uci.edu/ml/datasets/Wine+Quality
+
+## Variabler som finns i datat
+Vi kommer att använda oss utav alla förklaringsvariabler nedan i en GLM modell för att undersöka vilka av dessa variabler som har ett samband med responsvariabeln, qualitydiff. När/om vi får variabler som ej har ett samband med qualitydiff så kommer vi att ta bort dessa förklaringsvariabler, sedan kommer vi att använda oss utav de X variabler som har ett samband i resterande modeller
+
+* quality - omkodad till qualitydiff, som jag skrev ovan (responsvariabel)
+* fixed acidity - most acids involved with wine or fixed or nonvolatile (do not evaporate readily)
+* volatile acidity - the amount of acetic acid in wine, which at too high of levels can lead to an unpleasant, vinegar taste
+* citric acid - found in small quantities, citric acid can add 'freshness' and flavor to wines
+* residual sugar - the amount of sugar remaining after fermentation stops, it's rare to find wines with less than 1 gram/liter and
+* chlorides -  the amount of salt in the wine
+* free sulfur dioxide - the free form of SO2 exists in equilibrium between molecular SO2 (as a dissolved gas) and bisulfite ion; it prevents
+* total sulfur dioxide - amount of free and bound forms of S02; in low concentrations, SO2 is mostly undetectable in wine, but at free SO2
+* density - the density of water is close to that of water depending on the percent alcohol and sugar content
+* pH - describes how acidic or basic a wine is on a scale from 0 (very acidic) to 14 (very basic); most wines are between 3-4 on the
+* sulphates - a wine additive which can contribute to sulfur dioxide gas (S02) levels, wich acts as an antimicrobial and
+* alcohol - % alcohol content, scale is from 8 - 15 % alcohol content.
+
+
+
+```{r, collapse  = TRUE, include = TRUE, message=FALSE, echo = FALSE}
+#Läser in datat
+whitewine <- read.csv("winequality-white.csv", header = TRUE, sep = ";")
+redwine <- read.csv("winequality-red.csv", header = TRUE, sep = ";")
+
+
+
+
+
+```
+
+```{r, collapse  = TRUE, include = FALSE, message=FALSE}
+# Lägger till kolumn på whitewine och redwine data där vin = 0 är vit och och vin = 1 är röd
+
+
+whitewine <- whitewine %>% mutate(vin = 1)
+redwine <- redwine %>% mutate(vin = 0)
+
+```
+
+```{r, collapse  = TRUE, include = FALSE, message=FALSE}
+
+# sätter ihop båda datasetten
+redwhite <- full_join(whitewine, redwine)
+
+# Skapar ny kolumn som heter Excellent om quality är 7 eller högre, 
+# oavsett vilken druva samt om quality är lägre än 7 så heter den Not Excellent
+
+redwhite <- redwhite %>% mutate(qualitydiff = case_when(quality >= 7 ~ "Excellent", quality < 7 ~ "Not Excellent"))
+redwhite <- redwhite %>% mutate(qualitydiff = as.factor(qualitydiff))
+redwhite <- redwhite %>% mutate(vin = as.factor(vin))
+
+## Tar bort kolumn 12 i mitt data, dvs quality
+redwhite <- redwhite[,-c(12)]
+
+#Jag gör om vin och qualitydiff till faktorer eftersom vid regression blir det konstigt annars
+#då får man med både 0 och 1 samt excellent och not excellent.
+
+```
+## Utvärdering av datat
+
+Vi ser att datat är negativt skevt mot "Excellent" där cirka 20% av datat består av just "Excellent" och resterande 80% består av "Not Excellent". Kollar vi på Andeln röda viner som har fått stämpeln "Excellent" så ser  vi att det är 13.5% och andeln vita viner som har fått samma stämpel är drygt 21.6%
+
+Vi undersöker om det finns några NAs, datapunkter som saknas. I detta fall finns det ej några saknade datapunkter. Detta är bra, om det hade varit data som saknades så kan man antigen ta bort alla dessa rader eller använda oss utav "impute" med "knnimpute" eller liknande.
+
+
+Utifrån det vi har sett i orginaldatat så förväntar jag mig att mina modeller kommer kunna predikera "Not Excellent" rätt oftare än vad modellerna kommer lyckas ha rätt på "Excellent". Detta på grund utav mestadels av orginaldatat består av "Not Excellent".
+```{r, echo = FALSE, include = FALSE}
+sum(is.na(redwhite))
+
+```
+
+Kikar vi på Figur 1, korrelationsplotten, så ser vi att en del variabler har rätt så hög korrelation mellan varandra, detta bör även orsaka problem för NaiveBays som antar oberoende.
+
+
+```{r, echo = FALSE, include=TRUE}
+#Använder mig utav två paket, corrplot och Hmisc
+corrmatrix <- rcorr(as.matrix(redwhite[,-c( 12, 13 )]))
+corrplot(corrmatrix$r, 
+         diag=FALSE, 
+         method="pie", 
+         order="AOE", 
+         tl.col="black",
+         main = "Figur 1",
+         mar=c(0,0,1,0)
+)
+#Man kan likagärna använda cor(redwhite[,-c( 12, 13 )])
+```
+
+
+
+
+
+```{r, echo = FALSE, include = FALSE}
+
+redwhite %>% count(qualitydiff, vin)
+
+
+```
+
+
+```{r, message = FALSE, echo = FALSE, include = FALSE}
+
+
+#glm.diag <- glm.diag(glm.fits)
+#glm.diag.plots(glm.fits, glm.diag)
+
+```
+
+
+
+
+
+
+
+
+
+## Modelltestning
+Vi kommer att testa fem olika modelltyper.
+
+
+
+* Logistisk regression (GLM) - Generalized linear model, där vi anger familjeparametern som en bionomialfördelning för att kunna klassa våran responsvariabel. Det finns ett antal länkfunktioner till familjeparametern, vi definierade ej någon specifik länkfunktion i koden som kommer köras för GLM, därav kommer koden automatiskt antaR "logit" som länk. Med andra ord beräknas log-oddsen.
+
+* LDA - Linear Discriminant Analysis, kortfattat så reducerar den dimensioner, variabler, i ett datasett men samtidigt försöker modellen bibehålla så mycket information som möjligt. Liknar GLM. LDA antar normalfördelning med samma väntevärde och varians för alla klasser, LDA antar även en linjär beslutsgräns. $LDA \sim {\sf N}(µ_{k}, \sum)$
+
+* QDA - Quadratic Discriminant Analysis, samma som LDA men modellen tillåter att variansen är olika mellan varje klass och tillåter varje klass att ha sin egna kovariansmatris, funktionen är även kvadratisk istället för linjär, därav kan även QDA anta icke-linjära beslutsgränser. $QDA \sim {\sf N}(µ_{k}, \sum_{k})$
+
+* NaiveBayes - Baserad på Bayes' Teori, med antagande av oberoende mellan mina variabler. $NaiveBayes \sim {\sf N}(µ_{k}, \sigma_{k} \perp\!\!\!\!\!\>\perp)$
+
+* kNN - icke-parametrisk algoritm, gör inga antaganden alls. I klassificering så kollar modellen efter de k närmaste grannarna med hjälp av euklidiska avståndet, k väljer jag själv.
+
+
+Alla modellerna ovan förutom kNN gör diverse antaganden. jag tror ändå att kNN alltid presterar relativt bra utifrån den förutsättningen att kNN inte antar något.
+
+
+```{r, echo = FALSE, include = FALSE}
+
+set.seed(123)
+
+## Delar upp datat där jag tar 3/4 som TRUE och 1/4 som FALSE
+split <- sample.split(redwhite, SplitRatio = 3/4, group = NULL)
+
+### Här anger jag att traning innehåller 3/4 av redwhite
+train <- (subset(redwhite, split == TRUE))
+## Här anger jag att test innehåller 1/4 av redwhite eller som på exempel i bok [!train,], dvs icke train är test.
+test <- (subset(redwhite, split == FALSE))
+
+
+```
+
+## GLM
+jag har valt 75% av datat som träningsdata och resterande av datat är valideringsdata
+Vi börjar med att testa med hela datatsettet, alltså använder vi oss utav qualitydiff som responsvariabel och alla förklaringsvariabler är med i modellen.
+
+Vi har en gräns på 1% signifikansnivå, om någon av förklaringsvariablerna i modellen överstiger denna gräns så kommer vi att plocka bort de variablerna.
+
+
+```{r echo = FALSE, include = FALSE}
+
+# skattar modellen med träningdatat
+glm.fits <- glm(qualitydiff ~.,
+                data = train,
+                family = binomial)
+
+summary(glm.fits)
+
+
+# predikterade slh för 1:or (använder predict-funkt.)
+glm.probs <- predict(glm.fits, test, type = "response")
+
+
+# skapar en vektor för prediktioner, som fylls med "Excellent"
+# ersätter alla som har slh > 0.5 med "Not excellent"
+glm.pred <- rep ("Excellent" , nrow(test))
+glm.pred[glm.probs >.5] <- "Not Excellent"
+
+# confunsion matrix (Testdata) Min null error rate ?r ungef?r 0,1837 dvs 341 / 1856 Detta v?rde f?r ej vara h?gre ?n test error rate.
+glm <- table(test$qualitydiff, glm.pred )
+  
+
+
+# Test error rate (=andel felklassificerade)  
+terrorglm <- mean(glm.pred != test$qualitydiff )
+
+
+```
+När vi summerar GLM modellen så ser vi att tre variabel överstiger min gräns på 1% signifikansnivå, alltså att det ej finns ett samband mellan de variablerna och qualitydiff på 1% signifikans. Vi misslyckas alltså att förkasta nollhypotesen och att coeffisienten är lika med noll, dvs de förklaringsvariablerna som överstiger 1% signifikans har ej "non-zero" effekt på responsvariabeln.
+
+Detta betyder alltså att citric.acid, chlorides och total.sulfur.dioxide ryker från vårat data. kan tilläggas att free.sulfur.dioxide ligger nära gränsen.
+
+```{r, echo = FALSE, include = FALSE}
+
+## Kollar vad Excellent och Not excellent fick för 0 och 1 värde
+contrasts(test$qualitydiff)
+
+
+```
+
+```{r, echo = FALSE, include = FALSE}
+#Test Error Rate, andelen felklassade
+
+#mean(glm.pred != test$qualitydiff)
+
+```
+
+```{r, echo = FALSE, include=FALSE}
+#Visar andelen test error om vi hade klassat hela datat efter majoritetsklassen endast
+mean("Not Excellent" != test$qualitydiff)
+
+```
+Test error om man väljer att klassa all data som majoritetsklassen är med andra ord betyder det att våra modeller vi ska koda i kapitlet nedan bör ha en lägre test error rate än 0.198099 för att vara "bättre" än slumpen.
+
+## GLM med "dåliga" variabler borttagna
+
+Vi gör om testet ovan fast vi tar nu bort de "dåliga" variablerna från modellen
+
+```{r, echo = FALSE, include = FALSE}
+
+# skattar modellen med träningdatat
+glm.fits2 <- glm(qualitydiff ~. -citric.acid -total.sulfur.dioxide -chlorides,
+                data = train,
+                family = binomial)
+
+summary(glm.fits2)
+
+
+```
+
+
+
+
+```{r, echo = FALSE, include = FALSE}
+
+# skattar modellen med träningdatat, minus alla icke-signifikanta variabler
+glm.fits3 <- glm(qualitydiff ~. -citric.acid -total.sulfur.dioxide -chlorides - free.sulfur.dioxide ,
+                data = train,
+                family = binomial)
+
+summary(glm.fits3)
+
+# predikterade slh för 1:or (använder predict-funkt.)
+glm.probs3 <- predict(glm.fits3, test, type = "response")
+
+
+# skapar en vektor för prediktioner, som fylls med "Excellent"
+# ersätter alla som har slh > 0.5 med "Not excellent"
+glm.pred3 <- rep ("Excellent" , nrow(test))
+glm.pred3[glm.probs3 >.5] <- "Not Excellent"
+
+# confunsion matrix (Testdata) Min null error rate ?r ungef?r 0,1837 dvs 341 / 1856 Detta v?rde f?r ej vara h?gre ?n test error rate.
+glm3 <- table(test$qualitydiff, glm.pred3 )
+  
+# Test error rate (=andel felklassificerade) 
+terrorglm2 <- mean(glm.pred3 != test$qualitydiff )
+
+
+```
+
+Det slutade alltså i en ökning på Test error rate med 0.05% när man tog bort de förklaringsvariabler som hade en signifikansnivå över 1%, detta kommer oavsett bli de slutgiltiga variablerna som ska användas för att jämföra diverse modeller mot varandra.
+
+Vi kommer vidare testa de resterande fyra modeller mot varandra och undersöka vilken av dessa som har bäst "AUC", man kan även använda sig utav måttet "Accuracy", där Accuracy är 1 - Test Error Rate, för att jämföra modellerna. Jag anser att AUC representerar detta data bättre eftersom att datat inte är balancerad mellan "Excellent" och "Not Excellent"
+
+
+
+
+
+
+```{r, include = TRUE, message=FALSE, echo = FALSE}
+
+# skattar LDA-modellen med träningsdatat
+lda.fit <- lda(qualitydiff ~., data = train)
+
+# prediktioner på testdata
+lda.pred <- predict(lda.fit, test)
+
+#Kollar vad som finns i våran lda.pred
+#names(lda.pred)
+# Apostriori slh, dvs skattade slh att tillhöra resp. klass för varje obs.
+#head(lda.pred$posterior)
+
+# Predikterad klass (den av klasserna som ovanstående slh är störst för...)
+lda.class <- lda.pred$class
+
+# confusion matrix
+lda <- table(test$qualitydiff, lda.class)
+
+# test error rate
+terrorlda <-mean(lda.class != test$qualitydiff)
+
+```
+
+
+
+
+```{r, echo = FALSE}
+
+# skattar LDA-modellen med träningsdatat, minus alla icke-signifikanta variabler
+lda.fit2 <- lda(qualitydiff ~. -citric.acid -total.sulfur.dioxide -chlorides - free.sulfur.dioxide, data = train)
+
+# prediktioner på testdata
+lda.pred2 <- predict(lda.fit2, test)
+
+
+
+
+# Predikterad klass (den av klasserna som ovanstående slh är störst för...)
+lda.class2 <- lda.pred2$class
+# confusion matrix (testdata)
+lda2 <- table(test$qualitydiff, lda.class2)
+
+# test error rate
+terrorlda2 <- mean(lda.class2 != test$qualitydiff)
+
+
+```
+
+
+
+```{r, include = TRUE, message=FALSE, echo = FALSE}
+
+# skattar QDA-modellen med träningsdatat
+qda.fit <- qda(qualitydiff ~., data = train)
+
+# prediktioner på testdata
+qda.pred <- predict(qda.fit, test)
+
+# predikterade klasser för testdatat
+qda.class <- qda.pred$class
+
+# confusion matrix (testdata)
+qda <- table(test$qualitydiff, qda.class)
+
+terrorqda <-mean(qda.class != test$qualitydiff)
+
+```
+
+
+```{r, echo = FALSE, include = TRUE}
+
+# skattar QDA-modellen med träningsdatat, minus alla icke-signifikanta variabler
+qda.fit2 <- qda(qualitydiff ~. -citric.acid -total.sulfur.dioxide -chlorides - free.sulfur.dioxide, data = train)
+
+# prediktioner på testdata
+qda.pred2 <- predict(qda.fit2, test)
+
+# predikterade klasser för testdatat
+qda.class2 <- qda.pred2$class
+
+# confusion matrix (testdata)
+qda2 <- table(test$qualitydiff, qda.class2)
+
+terrorqda2 <-mean(qda.class2 != test$qualitydiff)
+
+```
+
+
+```{r, include = TRUE, message=FALSE, echo = FALSE}
+
+# skattar Naive Bayes med träningsdatat
+nb.fit <- naiveBayes(qualitydiff ~., data = train)
+
+# predikterad klass på testdata
+nb.class <- predict(nb.fit, test)
+
+# Apostriori slh, dvs skattade slh att tillhöra resp. klass för varje obs.
+nb.pred <- predict(nb.fit, test, type="raw")
+
+# confusion matrix (testdata)
+nb <- table(test$qualitydiff, nb.class)
+
+
+# Test error rate
+terrornb <- mean(nb.class != test$qualitydiff)
+
+```
+
+```{r, echo = FALSE}
+
+# skattar Naive Bayes med träningsdatat, minus alla icke-signifikanta variabler
+nb.fit2 <- naiveBayes(qualitydiff ~.-citric.acid -total.sulfur.dioxide -chlorides - free.sulfur.dioxide, data = train)
+
+# predikterad klass på testdata
+nb.class2 <- predict(nb.fit2, test)
+
+# Apostriori slh, dvs skattade slh att tillhöra resp. klass för varje obs.
+nb.pred2 <- predict(nb.fit2, test, type="raw")
+
+# confusion matrix (testdata)
+nb2 <- table(test$qualitydiff, nb.class2)
+
+
+# Test error rate , minus alla icke-signifikanta variabler
+terrornb2 <-mean(nb.class2 != test$qualitydiff)
+
+```
+
+
+## kNN
+När det kommer till kNN så behöver vi göra lite annorlunda jämfört med datat ovan. Vi behöver gå in i datat och ta bort filer lite annorlunda jämfört med regressionerna
+
+```{r, include = TRUE, message=FALSE, echo = FALSE}
+
+# Träningsdatats X-variabel som en matris, tar bort qualitydiff eftersom det är våran responsvariabel
+train.X <- as.matrix(train[,-c( 13 )])
+
+#delete columns 3, 5, 6, och 7, dvs citric.acid, total.sulfur.dioxide,  chlorides och free.sulfur.dioxide
+train.X2 <-train.X[,-c( 3, 5, 6, 7 )] 
+
+# Testdatats X-variabel som en matris, tar bort qualitydiff eftersom det är våran responsvariabel
+test.X <- as.matrix(test[,-c( 13 )])
+#samma som i träningsdatat.
+test.X2 <- test.X[,-c( 3, 5, 6, 7 )]
+
+```
+
+Nedan testar vi med olika antal grannar, jag testade från 1 till 15 grannar och kom fram till att endast kolla på den närmsta grannen, k = 1, gav mig lägst Test Error rate. Det kan tilläggas att ha k = 1 brukar generellt sett tendera till att göra en "over-fitting" av datat, det är inte optimalt. Vi får se lite senare i labben när jag jämför alla modeller mot varandra, Accuracy samt AUC.
+```{r, include = TRUE, message=FALSE, echo = FALSE}
+# skattar kNN med träningsdatat
+knn.pred <- knn( train.X, test.X, train$qualitydiff, k=1, prob = TRUE)
+#Confusion Matrix för hela datat
+knn <- table(test$qualitydiff, knn.pred)
+
+#Test error rate för modellen med inga borttagna variabler
+terrorknn <- mean(knn.pred != test$qualitydiff)
+
+```
+
+
+
+
+Nedan så använder vi samma k = 1 men vi kör på datat där vi har tagit bort en del variabler som inte var signifikanta
+```{r, echo = FALSE}
+# skattar kNN med träningsdatat, minus alla icke-signifikanta variabler
+knn.pred2 <- knn( train.X2, test.X2, train$qualitydiff, k=1, prob = TRUE)
+
+#Confusion matrix, 
+knn2 <- table(test$qualitydiff, knn.pred2)
+
+#Test error rate för modellen med ett par borttagna modeller
+terrorknn2 <- mean(knn.pred2 != test$qualitydiff)
+
+
+
+```
+
+Vi gör även samma sak som ovan fast vi skalar om varians till 1 och standardavvikelsen till 0 så att det euklidiska avståndet blir "jämnare". Vi hade två förklaringsvariabler som hade riktigt hög varians jämfört med resten. Jag döper dessa modeller till KNNZ och KNNZ*2*
+```{r, echo = FALSE}
+#Test och träningsdata
+train.Xx <- train[,-c( 12, 13 )]
+test.Xx <- test[,-c( 12, 13 )]
+
+#test och träningsdata, minus alla icke-signifikanta variabler
+train.Xxx <- train[,-c(3, 5, 6, 7, 12, 13 )]
+test.Xxx <- test[,-c(3, 5, 6, 7, 12, 13 )]
+
+
+## Standardiserar till varians = 1 och standardavvikelse = 0
+standardized.train <- scale(train.Xx)
+standardized.test <- scale(test.Xx)
+
+## Standardiserar till varians = 1 och standardavvikelse = 0 plus borttag av icke-signifikanta variabler
+standardized.train2 <- scale(train.Xxx)
+standardized.test2 <- scale(test.Xxx)
+
+
+knn.predz <- knn(standardized.train, standardized.test, train$qualitydiff, k = 1,  prob = TRUE)
+terrorknnz <- mean(knn.predz != test$qualitydiff)
+knnz <- table(test$qualitydiff, knn.predz)
+
+
+knn.predzz <- knn(standardized.train2, standardized.test2, train$qualitydiff, k = 1, prob = TRUE)
+terrorknnzz <- mean(knn.predzz != test$qualitydiff)
+
+
+knnzz <- table(test$qualitydiff, knn.predzz)
+
+```
+
+
+## Jämför Accuracy och AUC mellan modellerna
+Vi kommer att skapa Confusion matriser, en tabell som evaluerar och summerar andeln korrekta och inkorrekt predektioner gjorde av respektive modell,  där vi med hjälp av paketet caret kunna beräkna intressanta värden som Accuracy, Sensitivity och Specificity.
+
+
+- Modellnamn *2* är alltså modellerna där de "dåliga" förklaringsvariablerna är borttagna 
+```{r, echo = FALSE, message=FALSE}
+
+#Använder mig utav ett biblotek som beräknar diverse värden i en Confusion Matrix. Slipper alltså kalkylera Accuracy, Sensitivity osv för hand.
+conglm <- confusionMatrix(glm)
+conglm3 <- confusionMatrix(glm3)
+
+conlda <- confusionMatrix(lda)
+conlda2 <- confusionMatrix(lda2)
+
+conqda <- confusionMatrix(qda)
+conqda2 <- confusionMatrix(qda2)
+
+connb <- confusionMatrix(nb)
+connb2 <- confusionMatrix(nb2)
+
+conknn <- confusionMatrix(knn)
+conknn2 <- confusionMatrix(knn2)
+
+conknnz <- confusionMatrix(knnz)
+conknnzz <- confusionMatrix(knnzz)
+
+testerroralla <- bind_cols(terrorglm, terrorglm2, terrorlda, terrorlda2, terrorqda, terrorqda2, terrornb, terrornb2, terrorknn, terrorknn2, terrorknnz, terrorknnzz )
+testerroralla2 <- as.data.frame(testerroralla)
+
+colnames(testerroralla2) <- c("GLM", "GLM*2*", "LDA", "LDA*2*", "QDA", "QDA*2*", "NB", "NB*2*", "KNN", "KNN*2*", "KNNZ", "KNNZ*2*")
+
+rownames(testerroralla2) <- c("Test Error Rate")
+
+testerroralla3 <-as.data.frame(t(testerroralla2))
+
+
+#str(conglm) detta visade mig vart jag kan hitta respektive data i array/matrisen
+
+#Tar data från respektive modells confusionMatrix Accuracy  och lägger in det i en tibble
+Accuracytable <- bind_rows(conglm$overall[c(1)], conglm3$overall[c(1)],
+                                      conlda$overall[c(1)], conlda2$overall[c(1)],
+                                      conqda$overall[c(1)], conqda2$overall[c(1)],
+                                      connb$overall[c(1)], connb2$overall[c(1)],
+                                      conknn$overall[c(1)], conknn2$overall[c(1)],
+                                      conknnz$overall[c(1)], conknnzz$overall[c(1)])
+#Tar data från respektive modells confusionMatrix Sensitivitet och Specificitet  och lägger in det i en tibble
+SensiSpeci <- bind_rows(conglm$byClass[c(1:2)], conglm3$byClass[c(1:2)],
+                                      conlda$byClass[c(1:2)], conlda2$byClass[c(1:2)],
+                                      conqda$byClass[c(1:2)], conqda2$byClass[c(1:2)],
+                                      connb$byClass[c(1:2)], connb2$byClass[c(1:2)],
+                                      conknn$byClass[c(1:2)], conknn2$byClass[c(1:2)],
+                                      conknnz$byClass[c(1:2)], conknnzz$byClass[c(1:2)])
+
+
+#Gör om till en dataframe så jag kan ändra namn lättare, går säkert att göra med en tibble men lättare att göra det jag redan kan.
+Accuracytable2 <- as.data.frame(Accuracytable)
+
+# Rad 1 får namn "GLM" osv...
+#rownames(Accuracytable2) <- c("GLM", "GLM*2*", "LDA", "LDA*2*", "QDA", "QDA*2*", "NB", "NB*2*", "KNN", "KNN*2*", "KNNZ", "KNNZ*2*")
+
+# Kolumn 1 får namn "Accuracy"
+colnames(Accuracytable2) <- c("Accuracy")
+
+##Binder ihop mina tre tibble/dataframes till ett data istället
+cbind(Accuracytable2, SensiSpeci, testerroralla3)
+
+```
+
+
+
+Här ser vi beroende på modell att  Accuracy, Sensitivity, Specificity och Test Error Rate ökar/sänks.
+Jag antog utifrån korrelationsdatat att NaiveBays skulle ha den sämsta predekteringen. Resterande modeller var svårare att förutspå, förvisso har LDA och GLM mycket i likhet när det kommer till antaganden.
+
+Vi ser även att KNNZ har den högsta Accuracy, Sensitivity och lägst Test Error Rate av de alla 12 modellerna vi testade. Beroende på vad målet med klassningen är så kan man alltid justera och vikta om prediktionerna mot exempelvis Sensitivity. Nackdelen då är att Specifity kommer minska, och i följd Accuracy och Test Error Rate.
+
+Sensitivity = andelen "Excellent" som blev klassad rätt (TP / TP + FN)
+
+Specifity = andelen "Not Excellent" som blev klassad rätt
+
+Test Error Rate = Andelen felklassade responsvariabler
+
+Accuracy = 1 - Test Error Rate, dvs andelen rätt klassade responsvariabler
+
+
+
+
+
+
+## Vi kikar nu på ROC AUC
+ROC "skapar" punkter baserat på y-axel = Sensitivity och x-axel = 1 - Specifity där ROC testar alla olika "thresholds". "thresholds" är alltså något man själv sätter i prediktionerna, vilken sannolikhet man vill att en av responsvariablerna ska ha, vilken "weight" alltså.
+
+Exempel: 
+glm.pred[glm.probs >.5] <- "Not Excellent"  ersätter alla som har slh > "thresholds" med "Not excellent" där 0 < "thresholds" < 1, detta gör alltså paketet pROC med funktioen roc() med "thresholds" 0 hela vägen till 1 och plottar upp detta i en graf för varje beräkning. Sedan beräknar funktionen även arean under dessa punkter, AUC. Grafen nedan visar hur slutresultatet blev för respektive modell.
+
+Vi får fram att GLM, LDA och QDA presterar ungefär likvärdigt medan k = 1 är lite sämre än slumpen, jag testade även med k = 3, 5, 10 och fick en mycket bättre ranking predicion med kNN då.
+
+```{r, echo = FALSE}
+
+par(mfrow = c(2, 2))
+rocglm <- roc(test$qualitydiff ~ glm.probs, plot = TRUE, print.auc = TRUE, quiet = TRUE, main = "GLM*2*")  
+roclda <- roc(test$qualitydiff ~ lda.pred$posterior[,2], plot = TRUE, print.auc = TRUE, quiet = TRUE, main = "LDA*2*")
+rocqda <- roc(test$qualitydiff ~ qda.pred$posterior[,2], plot = TRUE, print.auc = TRUE, quiet = TRUE, main = "QDA*2* ")
+rocnaive <- roc(test$qualitydiff ~ nb.pred[,2], plot = TRUE, print.auc = TRUE, quiet = TRUE, main = "Naive Bayes*2*")
+
+rocknn <- roc(test$qualitydiff ~ attributes(knn.pred2)$prob, plot = TRUE, print.auc = TRUE, quiet = TRUE, main = "KNN*2*, k = 1")
+
+rocknnzz <- roc(test$qualitydiff ~ attributes(knn.predzz)$prob, plot = TRUE, print.auc = TRUE, quiet = TRUE, main = "KNNZ*2*, k = 1")
+
+
+```
