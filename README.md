@@ -7,16 +7,13 @@ Denna repository innehåller HTML-exporterade filer från mina statistiska analy
 
 För att se filerna i interaktivt format, klicka på länkarna nedan. De öppnas via nbviewer, som renderar HTML-filerna korrekt
 
-```shell
-https://nbviewer.org/
+- [nbviewer.org](https://nbviewer.org/)
 
-https://nbviewer.org/github/ihavenoideass/Statistisk-analys/blob/main/Inferens/Klassificering_predektion/Klassificeringsstudie_H1N1_Flue.nb.html
+- [Klassificeringsstudie av H1N1 Flu](https://nbviewer.org/github/ihavenoideass/Statistisk-analys/blob/main/Inferens/Klassificering_predektion/Klassificeringsstudie_H1N1_Flue.nb.html)
 
-https://nbviewer.org/github/ihavenoideass/Statistisk-analys/blob/main/Inferens/Bootstrapping/Bootstrapping_umut.html
-
+- [Bootstrapping Umut](https://nbviewer.org/github/ihavenoideass/Statistisk-analys/blob/main/Inferens/Bootstrapping/Bootstrapping_umut.html)
 
 
-```
 
 ## Varför nbviewer?
 GitHub renderar inte HTML-exporter från notebooks interaktivt. nbviewer tillåter dig att se innehållet som det var tänkt att visas, inklusive interaktiva element som grafer och tabeller.
