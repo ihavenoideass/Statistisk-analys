@@ -13,6 +13,8 @@ För att se filerna i interaktivt format, klicka på länkarna nedan. De öppnas
 
 - [Bootstrapping Umut](https://nbviewer.org/github/ihavenoideass/Statistisk-analys/blob/main/Inferens/Bootstrapping/Bootstrapping_umut.html)
 
+- [Rapport - Predektion av vin](https://github.com/ihavenoideass/Statistisk-analys/blob/main/Inferens/Klassificering_predektion/Predektion_vin.pdf)
+
 
 
 ## Varför nbviewer?
