@@ -15,6 +15,8 @@ För att se filerna i interaktivt format, klicka på länkarna nedan. De öppnas
 
 - [Rapport - Predektion av vin](https://github.com/ihavenoideass/Statistisk-analys/blob/main/Inferens/Klassificering_predektion/Predektion_vin.pdf)
 
+- [Rapport - Simuleringsstudie](https://github.com/ihavenoideass/Statistisk-analys/blob/main/Inferens/Machine_Learning/Machine_Learning.pdf)
+
 
 
 ## Varför nbviewer?
