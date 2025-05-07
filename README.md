@@ -7,7 +7,6 @@ Denna repository innehåller HTML-exporterade filer från mina statistiska analy
 
 För att se filerna i interaktivt format, klicka på länkarna nedan. De öppnas via nbviewer, som renderar HTML-filerna korrekt
 
-- [nbviewer.org](https://nbviewer.org/)
 
 - [Klassificeringsstudie av H1N1 Flu](https://nbviewer.org/github/ihavenoideass/Statistisk-analys/blob/main/Inferens/Klassificering_predektion/Klassificeringsstudie_H1N1_Flue.nb.html)
 
